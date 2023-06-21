@@ -19,9 +19,9 @@ parent:
 components:
   - name: image-build
     image:
-      imageName: go-image:latest
+      imageName: skopeoimage:stable
       dockerfile:
-        uri: docker/Dockerfile
+        uri: contrib/skopeoimage/stable/Containerfile
         buildContext: .
         rootRequired: false
   - name: kubernetes-deploy
