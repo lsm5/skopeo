@@ -4,7 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 
 	commonFlag "github.com/containers/common/pkg/flag"
@@ -45,6 +48,7 @@ type copyOptions struct {
 	encryptionKeys           []string                  // Keys needed to encrypt the image
 	decryptionKeys           []string                  // Keys needed to decrypt the image
 	imageParallelCopies      uint                      // Maximum number of parallel requests when copying images
+	digestType               string                    // Digest type to use (sha256, sha512)
 }
 
 func copyCmd(global *globalOptions) *cobra.Command {
@@ -97,6 +101,7 @@ See skopeo(1) section "IMAGE NAMES" for the expected format
 	flags.IntSliceVar(&opts.encryptLayer, "encrypt-layer", []int{}, "*Experimental* the 0-indexed layer indices, with support for negative indexing (e.g. 0 is the first layer, -1 is the last layer)")
 	flags.StringSliceVar(&opts.decryptionKeys, "decryption-key", []string{}, "*Experimental* key needed to decrypt the image")
 	flags.UintVar(&opts.imageParallelCopies, "image-parallel-copies", 0, "Maximum number of image layers to be copied (pulled/pushed) simultaneously. Not setting this field will fall back to containers/image defaults.")
+	flags.StringVar(&opts.digestType, "digest", "", "Digest type to use (sha256, sha512). If not specified, uses the default from storage.conf")
 	return cmd
 }
 
@@ -158,6 +163,68 @@ func (opts *copyOptions) run(args []string, stdout io.Writer) (retErr error) {
 	destinationCtx, err := opts.destImage.newSystemContext()
 	if err != nil {
 		return err
+	}
+
+	var tempStorageConf string
+	if opts.digestType != "" {
+		if opts.digestType != "sha256" && opts.digestType != "sha512" {
+			return fmt.Errorf("unsupported digest type %q. Choose one of: sha256, sha512", opts.digestType)
+		}
+		// Find the current storage.conf
+		storageConfPath := os.Getenv("CONTAINERS_STORAGE_CONF")
+		if storageConfPath == "" {
+			// Try common locations
+			candidates := []string{
+				"/etc/containers/storage.conf",
+				"/usr/share/containers/storage.conf",
+				filepath.Join(os.Getenv("HOME"), ".config/containers/storage.conf"),
+			}
+			for _, candidate := range candidates {
+				if _, err := os.Stat(candidate); err == nil {
+					storageConfPath = candidate
+					break
+				}
+			}
+		}
+		if storageConfPath == "" {
+			return fmt.Errorf("could not find storage.conf to override digest_type")
+		}
+		// Read and modify storage.conf
+		orig, err := ioutil.ReadFile(storageConfPath)
+		if err != nil {
+			return fmt.Errorf("failed to read storage.conf: %w", err)
+		}
+		conf := string(orig)
+		// Replace or add digest_type in [storage.options]
+		re := regexp.MustCompile(`(?m)^([ \t]*#?[ \t]*digest_type[ \t]*=[ \t]*).*$`)
+		if re.MatchString(conf) {
+			conf = re.ReplaceAllString(conf, "digest_type = \""+opts.digestType+"\"")
+		} else {
+			// Add under [storage.options]
+			reSection := regexp.MustCompile(`(?m)^\[storage.options\]$`)
+			if reSection.MatchString(conf) {
+				conf = reSection.ReplaceAllString(conf, "[storage.options]\ndigest_type = \""+opts.digestType+"\"")
+			} else {
+				// Add section if missing
+				conf += "\n[storage.options]\ndigest_type = \"" + opts.digestType + "\"\n"
+			}
+		}
+		// Write to temp file
+		tmpFile, err := ioutil.TempFile("", "storage-*.conf")
+		if err != nil {
+			return fmt.Errorf("failed to create temp storage.conf: %w", err)
+		}
+		tempStorageConf = tmpFile.Name()
+		if _, err := tmpFile.Write([]byte(conf)); err != nil {
+			tmpFile.Close()
+			os.Remove(tempStorageConf)
+			return fmt.Errorf("failed to write temp storage.conf: %w", err)
+		}
+		tmpFile.Close()
+		os.Setenv("CONTAINERS_STORAGE_CONF", tempStorageConf)
+		defer func() {
+			os.Remove(tempStorageConf)
+		}()
 	}
 
 	var manifestType string
@@ -256,7 +323,7 @@ func (opts *copyOptions) run(args []string, stdout io.Writer) (retErr error) {
 			return err
 		}
 		passphrase = p
-	} // opts.signByFingerprint triggers a GPG-agent passphrase prompt, possibly using a more secure channel, so we usually shouldn’t prompt ourselves if no passphrase was explicitly provided.
+	} // opts.signByFingerprint triggers a GPG-agent passphrase prompt, possibly using a more secure channel, so we usually shouldn't prompt ourselves if no passphrase was explicitly provided.
 
 	var signers []*signer.Signer
 	if opts.signBySigstoreParamFile != "" {

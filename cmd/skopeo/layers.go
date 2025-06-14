@@ -12,6 +12,7 @@ import (
 	"github.com/containers/image/v5/image"
 	"github.com/containers/image/v5/pkg/blobinfocache"
 	"github.com/containers/image/v5/types"
+	storageTypes "github.com/containers/storage/types"
 	"github.com/opencontainers/go-digest"
 	"github.com/spf13/cobra"
 )
@@ -95,9 +96,16 @@ func (opts *layersOptions) run(args []string, stdout io.Writer) (retErr error) {
 		isConfig bool
 	}
 	var blobDigests []blobDigest
+	digestType := "sha256" // default
+	if dt := os.Getenv("CONTAINERS_STORAGE_CONF"); dt != "" {
+		storeOptions, err := storageTypes.DefaultStoreOptions()
+		if err == nil && storeOptions.DigestType != "" {
+			digestType = storeOptions.DigestType
+		}
+	}
 	for _, dString := range args[1:] {
-		if !strings.HasPrefix(dString, "sha256:") {
-			dString = "sha256:" + dString
+		if !strings.Contains(dString, ":") {
+			dString = digestType + ":" + dString
 		}
 		d, err := digest.Parse(dString)
 		if err != nil {
