@@ -31,4 +31,5 @@ prepare:
     - name: Install the main package
       how: install
       package:
+        # skopeo-tests will also install skopeo
         - skopeo-tests
