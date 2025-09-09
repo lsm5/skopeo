@@ -23,7 +23,7 @@ require:
 /integration:
     summary: Integration tests
     test: |
-        rpm -q containers-common skopeo
+        rpm -q containers-common docker-distribution skopeo
         make -C $(git rev-parse --show-toplevel) test-integration-local
     require+:
         - docker-distribution
