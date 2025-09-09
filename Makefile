@@ -208,7 +208,6 @@ test-integration:
 
 # Primarily intended for CI.
 test-integration-local: .eval-skopeo-binary
-	hack/warn-destructive-tests.sh
 	cd ./integration && SKOPEO_BINARY="$(abspath $(SKOPEO_BINARY))" $(GO) test $(SKOPEO_LDFLAGS) $(TESTFLAGS) $(if $(BUILDTAGS),-tags "$(BUILDTAGS)")
 
 # complicated set of options needed to run podman-in-podman
@@ -225,7 +224,6 @@ test-system:
 
 # Primarily intended for CI.
 test-system-local: .eval-skopeo-binary
-	hack/warn-destructive-tests.sh
 	bats --tap systemtest
 
 test-unit:
