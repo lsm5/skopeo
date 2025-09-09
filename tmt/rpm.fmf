@@ -27,5 +27,6 @@ require:
         make -C $(git rev-parse --show-toplevel) test-integration-local
     require+:
         - docker-distribution
+        - gpgme-devel
         - skopeo
     duration: 10m
