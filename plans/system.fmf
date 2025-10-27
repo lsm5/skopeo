@@ -1,0 +1,47 @@
+discover:
+    how: fmf
+execute:
+    how: tmt
+prepare:
+    - name: Install and enable EPEL
+      how: feature
+      epel: enabled
+    - name: Enable CRB
+      how: feature
+      crb: enabled
+    - name: Install test dependencies
+      how: install
+      package:
+          - bats
+          - git-core
+          - packit
+    - name: Fetch spec file from dist-git
+      how: shell
+      script: |
+        # We want spec file from dist-git.
+        rm -f rpm/skopeo.spec
+        # pkgs.devel.redhat.com link works here but RoG link does not. Since both
+        # are mirrored, let's just use the internal link
+        curl -fsSL https://pkgs.devel.redhat.com/cgit/rpms/skopeo/plain/skopeo.spec?h=rhel-9.7.0 -o skopeo.spec
+    # Need work dir to be a git repo
+    # TODO: Preserve git config from actual repo in test workdir
+    - name: Create git repo
+      how: shell
+      script: |
+        # These are only run on the testing-farm environment. Doesn't affect
+        # actual git history.
+        git config --global user.name "Gitlab User"
+        git config --global user.email "ci.email@example.com"
+        git init .
+        git add .
+        git commit -am 'commit to git'
+    - name: Build packages locally
+      how: shell
+      script: |
+          dnf -y builddep skopeo.spec
+          packit build locally
+    - name: Install RPMs
+      #when: trigger == manual
+      how: shell
+      #script: dnf -y install $(uname -m)/!(*debuginfo*).rpm --allowerasing --best --skip-broken
+      script: find $(uname -m) -maxdepth 1 -name "*.rpm" ! -name "*debuginfo*" -print0 | xargs -0 sudo dnf install -y --best --allowerasing

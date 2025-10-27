@@ -1,4 +1,6 @@
 require:
+    - git-core
+    - make
     - skopeo-tests
 
 environment:
@@ -10,5 +12,7 @@ adjust:
         RELEASE_TESTING: true
 
 summary: System test
-test: bash ./test.sh
+test: |
+    rpm -q containers-common skopeo skopeo-tests
+    make -C $(git rev-parse --show-toplevel) test-system-local
 duration: 60m
