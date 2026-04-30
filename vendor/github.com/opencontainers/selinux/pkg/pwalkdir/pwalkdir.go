@@ -1,8 +1,10 @@
+//go:build go1.16
 // +build go1.16
 
 package pwalkdir
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"path/filepath"
@@ -51,13 +53,27 @@ func WalkN(root string, walkFn fs.WalkDirFunc, num int) error {
 	var (
 		err error
 		wg  sync.WaitGroup
+
+		rootLen   = len(root)
+		rootEntry *walkArgs
 	)
 	wg.Add(1)
 	go func() {
 		err = filepath.WalkDir(root, func(p string, entry fs.DirEntry, err error) error {
 			if err != nil {
+				// Walking a file tree can race with removal,
+				// so ignore ENOENT, except for root.
+				// https://github.com/opencontainers/selinux/issues/199.
+				if errors.Is(err, fs.ErrNotExist) && len(p) != rootLen {
+					return nil
+				}
 				close(files)
 				return err
+			}
+			if len(p) == rootLen {
+				// Root entry is processed separately below.
+				rootEntry = &walkArgs{path: p, entry: entry}
+				return nil
 			}
 			// Add a file to the queue unless a callback sent an error.
 			select {
@@ -92,12 +108,16 @@ func WalkN(root string, walkFn fs.WalkDirFunc, num int) error {
 
 	wg.Wait()
 
+	if err == nil {
+		err = walkFn(rootEntry.path, rootEntry.entry, nil)
+	}
+
 	return err
 }
 
 // walkArgs holds the arguments that were passed to the Walk or WalkN
 // functions.
 type walkArgs struct {
-	path  string
 	entry fs.DirEntry
+	path  string
 }
