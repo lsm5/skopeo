@@ -1,10 +1,14 @@
 module github.com/sirupsen/logrus
 
+go 1.17
+
+require (
+	github.com/stretchr/testify v1.10.0
+	golang.org/x/sys v0.13.0
+)
+
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
-	github.com/stretchr/testify v1.2.2
-	golang.org/x/sys v0.0.0-20191026070338-33540a1f6037
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-go 1.13
