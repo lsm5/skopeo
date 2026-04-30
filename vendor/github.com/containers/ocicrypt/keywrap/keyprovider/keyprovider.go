@@ -18,15 +18,21 @@ package keyprovider
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+
 	"github.com/containers/ocicrypt/config"
 	keyproviderconfig "github.com/containers/ocicrypt/config/keyprovider-config"
 	"github.com/containers/ocicrypt/keywrap"
 	"github.com/containers/ocicrypt/utils"
 	keyproviderpb "github.com/containers/ocicrypt/utils/keyprovider"
-	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 )
 
 type keyProviderKeyWrapper struct {
@@ -112,19 +118,18 @@ func (kw *keyProviderKeyWrapper) WrapKeys(ec *config.EncryptConfig, optsData []b
 		if kw.attrs.Command != nil {
 			protocolOuput, err := getProviderCommandOutput(input, kw.attrs.Command)
 			if err != nil {
-				return nil, errors.Wrap(err, "error while retrieving keyprovider protocol command output")
+				return nil, fmt.Errorf("error while retrieving keyprovider protocol command output: %w", err)
 			}
 			return protocolOuput.KeyWrapResults.Annotation, nil
 		} else if kw.attrs.Grpc != "" {
-			protocolOuput, err := getProviderGRPCOutput(input, kw.attrs.Grpc, OpKeyWrap)
+			protocolOuput, err := getProviderGRPCOutput(input, kw.attrs.Grpc, kw.attrs.GrpcTLS, OpKeyWrap)
 			if err != nil {
-				return nil, errors.Wrap(err, "error while retrieving keyprovider protocol grpc output")
+				return nil, fmt.Errorf("error while retrieving keyprovider protocol grpc output: %w", err)
 			}
 
 			return protocolOuput.KeyWrapResults.Annotation, nil
-		} else {
-			return nil, errors.New("Unsupported keyprovider invocation. Supported invocation methods are grpc and cmd")
 		}
+		return nil, errors.New("Unsupported keyprovider invocation. Supported invocation methods are grpc and cmd")
 	}
 
 	return nil, nil
@@ -153,24 +158,67 @@ func (kw *keyProviderKeyWrapper) UnwrapKey(dc *config.DecryptConfig, jsonString 
 
 		return protocolOuput.KeyUnwrapResults.OptsData, nil
 	} else if kw.attrs.Grpc != "" {
-		protocolOuput, err := getProviderGRPCOutput(input, kw.attrs.Grpc, OpKeyUnwrap)
+		protocolOuput, err := getProviderGRPCOutput(input, kw.attrs.Grpc, kw.attrs.GrpcTLS, OpKeyUnwrap)
 		if err != nil {
 			// If err is not nil, then ignore it and continue with rest of the given keyproviders
 			return nil, err
 		}
 
 		return protocolOuput.KeyUnwrapResults.OptsData, nil
-	} else {
-		return nil, errors.New("Unsupported keyprovider invocation. Supported invocation methods are grpc and cmd")
 	}
+	return nil, errors.New("Unsupported keyprovider invocation. Supported invocation methods are grpc and cmd")
 }
 
-func getProviderGRPCOutput(input []byte, connString string, operation KeyProviderKeyWrapProtocolOperation) (*KeyProviderKeyWrapProtocolOutput, error) {
+func getProviderGRPCOutput(input []byte, connString string, grpcTls *keyproviderconfig.GrpcTLS, operation KeyProviderKeyWrapProtocolOperation) (*KeyProviderKeyWrapProtocolOutput, error) {
 	var protocolOuput KeyProviderKeyWrapProtocolOutput
 	var grpcOutput *keyproviderpb.KeyProviderKeyWrapProtocolOutput
-	cc, err := grpc.Dial(connString, grpc.WithInsecure())
-	if err != nil {
-		return nil, errors.Wrap(err, "error while dialing rpc server")
+
+	var cc *grpc.ClientConn
+	var err error
+
+	if grpcTls != nil {
+		var rootCAs *x509.CertPool
+		if grpcTls.RootCAFile != "" {
+			pem, err := os.ReadFile(grpcTls.RootCAFile)
+			if err != nil {
+				return nil, fmt.Errorf("failed to load root CA certificates  error=%v", err)
+			}
+			rootCAs = x509.NewCertPool()
+			if !rootCAs.AppendCertsFromPEM(pem) {
+				return nil, fmt.Errorf("no root CA certs parsed from file ")
+			}
+		} else {
+			rootCAs, err = x509.SystemCertPool()
+			if err != nil {
+				return nil, fmt.Errorf("error reading SystemCertPool error=%v", err)
+			}
+		}
+
+		var clientCerts []tls.Certificate
+		if grpcTls.CertFile != "" && grpcTls.KeyFile != "" {
+			cert, err := tls.LoadX509KeyPair(grpcTls.CertFile, grpcTls.KeyFile)
+			if err != nil {
+				return nil, fmt.Errorf("failed to load client certificate and key: %v", err)
+			}
+			clientCerts = []tls.Certificate{cert}
+		}
+
+		tlsConfig := &tls.Config{
+			RootCAs:            rootCAs,
+			ServerName:         grpcTls.ServerName,
+			InsecureSkipVerify: grpcTls.InsecureSkipVerify,
+			Certificates:       clientCerts,
+		}
+		creds := credentials.NewTLS(tlsConfig)
+		cc, err = grpc.Dial(connString, grpc.WithTransportCredentials(creds))
+		if err != nil {
+			return nil, fmt.Errorf("error while dialing TLS rpc server: %w", err)
+		}
+	} else {
+		cc, err = grpc.Dial(connString, grpc.WithInsecure())
+		if err != nil {
+			return nil, fmt.Errorf("error while dialing rpc server: %w", err)
+		}
 	}
 	defer func() {
 		derr := cc.Close()
@@ -187,12 +235,12 @@ func getProviderGRPCOutput(input []byte, connString string, operation KeyProvide
 	if operation == OpKeyWrap {
 		grpcOutput, err = client.WrapKey(context.Background(), req)
 		if err != nil {
-			return nil, errors.Wrap(err, "Error from grpc method")
+			return nil, fmt.Errorf("Error from grpc method: %w", err)
 		}
 	} else if operation == OpKeyUnwrap {
 		grpcOutput, err = client.UnWrapKey(context.Background(), req)
 		if err != nil {
-			return nil, errors.Wrap(err, "Error from grpc method")
+			return nil, fmt.Errorf("Error from grpc method: %w", err)
 		}
 	} else {
 		return nil, errors.New("Unsupported operation")
@@ -201,7 +249,7 @@ func getProviderGRPCOutput(input []byte, connString string, operation KeyProvide
 	respBytes := grpcOutput.GetKeyProviderKeyWrapProtocolOutput()
 	err = json.Unmarshal(respBytes, &protocolOuput)
 	if err != nil {
-		return nil, errors.Wrap(err, "Error while unmarshalling grpc method output")
+		return nil, fmt.Errorf("Error while unmarshalling grpc method output: %w", err)
 	}
 
 	return &protocolOuput, nil
@@ -216,7 +264,7 @@ func getProviderCommandOutput(input []byte, command *keyproviderconfig.Command) 
 	}
 	err = json.Unmarshal(respBytes, &protocolOuput)
 	if err != nil {
-		return nil, errors.Wrap(err, "Error while unmarshalling binary executable command output")
+		return nil, fmt.Errorf("Error while unmarshalling binary executable command output: %w", err)
 	}
 	return &protocolOuput, nil
 }
